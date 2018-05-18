@@ -1,30 +1,466 @@
 ---
-title: "320_FinalProject"
+title: "320 Final Project: Kickstarter Data Analysis"
 author: "Rajan Konai"
-date: "May 7, 2018"
+date: "May 18, 2018"
 output: html_document
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggplot2)
+library(scales)
+library(rvest)
+library(dplyr)
+library(tibble)
 ```
 
-## R Markdown
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+# Kickstarter Campaign Analysis
+Kickstarter is a global crowdfunding platform for a variety of campaigns. I am going to see what campaigns are likely to get funding and succeed. I will be using the ks-projects-201801.csv dataset available from Kaggle at https://www.kaggle.com/kemical/kickstarter-projects/data. For more info on Kickstarter, please see https://www.kickstarter.com/about?ref=global-footer.
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
 
-```{r cars}
-summary(cars)
+
+## Reading in Data
+
+Let's read in the dataset from Kaggle with read_csv, and take a look at the data.
+
+```{r read in csv file}
+
+kstarter <- read_csv("ks2018.csv")
+
+head(kstarter)
+
 ```
 
-## Including Plots
 
-You can also embed plots, for example:
+## Tidying Up
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+Now, let's clean the data a bit. There is a column we do not need, "usd pledged", as we will use "usd_pledged_real". Let's delete the column and rename it "usd_pledged" for clarity.
+
+Note that a couple of the columns have datatypes that don't entirely match what the column holds. Namely the "deadline" and "launched" columns, which should have a datetime type rather than character. Let's change that.
+
+I am using as.Date to change the deadline and launched cols into date objects. Note that I am throwing out the hours/minutes/seconds from the launch time, but we won't need that for our analysis. Here is some more info about how to deal with dates in R: https://www.rdocumentation.org/packages/zoo/versions/1.5-8/topics/as.Date.numeric. 
+
+```{r clean data}
+
+ks <- kstarter
+ks <- subset(ks, select = -c(13))
+ks <- dplyr::rename(ks, usd_pledged = usd_pledged_real, usd_goal = usd_goal_real)
+
+
+ks$deadline <- as.Date(ks$deadline, "%m/%d/%Y")
+ks$launched <- as.Date(ks$launched, format = "%m/%d/%Y")
+
+
+ks <- ks%>%
+  mutate(launch_year = lubridate::year(launched)) %>%
+  mutate(deadline_year = lubridate::year(deadline))
+  
+ks$launch_year <- with(ks, ifelse(launch_year == 1970, deadline_year, launch_year))
+
+
+head(ks)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+## General Data Statistics
+
+Let's get some statistics about top kickstarter campaigns.
+```{r stats}
+
+head(ks)
+head(ks$main_category)
+
+ks$main_category <- factor(ks$main_category, levels = names(sort(table(ks$main_category), decreasing = TRUE)))
+
+ks %>%
+  ggplot(aes(x = main_category)) + 
+  geom_bar(stat = "count") +
+  geom_text(stat = "count", aes(label = ..count..), vjust = -.25) +
+  theme(axis.text.x = element_text(angle= 90, hjust=1)) +
+  labs(x = "Project Main Category", y = "Project Count") + 
+  ggtitle("Total Project Counts by Main Category")
+
+
+total_proj = length(ks$ID)
+total_proj  
+
+
+# may not use below plot:
+
+ks %>%
+  group_by(category) %>%
+  summarize(z = length(category)) %>%
+  filter(z > 8500) %>%
+  ggplot(aes(x = reorder(category,-z), y = z)) + 
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = z), vjust = -.15) +
+  theme(axis.text.x = element_text(angle= 90, hjust=1)) +
+  labs(x = "Project Subcategory", y = "Project Count") + 
+  ggtitle("Total Project Counts by Subcategory")
+  
+
+ks_plot <- ks %>%
+  filter(launch_year < 2018) %>%
+  group_by(launch_year) %>%
+  summarize(projects = n())
+
+
+ks_plot %>%
+  ggplot(aes(x = launch_year, y = projects)) + 
+  geom_bar(stat = "identity") +
+  geom_text(aes(x = launch_year, y = projects, label = projects), vjust = -1) + 
+  scale_y_continuous(limits = c(0, 85000)) + 
+  labs(x = "Year", y = "Project Totals") +
+  ggtitle("Amount of Kickstarter Projects over Time")
+
+```
+
+
+
+Looks like Film and Video is the highest category for Kickstarter projects. What percent of all projects are Film and Video?
+```{r stats on highest}
+ks %>%
+  
+  filter(main_category == "Film & Video") 
+
+pct_film_video = sum(ks$main_category == "Film & Video")/length(ks$ID)
+
+pct_film_video
+
+```
+
+Only 16.7% of Kickstarter projects are in the Film & Video category.
+
+## What countries are projects coming from? 
+
+Notice how I took a log of the y-axis to make the data more readable, as the data was highly skewed towards US project submissions.
+
+```{r countries}
+
+ksplt <-ks %>%
+  
+  group_by(country) %>%
+  summarize(num = n()) %>%
+  arrange(desc(num)) %>%
+  ggplot(aes(reorder(country,-num),num)) + 
+  geom_bar(stat = "identity") +
+  scale_y_log10(breaks = c(10, 100, 1000, 10000)) + 
+  labs(x = "Country", y = "Number of Projects") +
+  geom_text(aes(label = num), vjust = .5, hjust = 1.5, angle = 90, color = "white") +
+  ggtitle("Number of Projects by Country")
+
+ksplt
+```
+
+## Project Types over the Years
+
+Now let's take a look and see how projects have changed over the years. I will do this using a method called faceting, which you can read more about at: https://plot.ly/ggplot2/facet_wrap/. Here, I used the column launch_year, which I previously created. It holds the year the project was launched.
+
+```{r yearly projects}
+
+ks %>%
+  filter(launch_year < 2018) %>%
+  ggplot(aes(x = main_category), y = count(main_category)) + 
+  geom_bar() + facet_wrap(~launch_year) +  
+  theme(axis.text.x = element_text(angle= 60, hjust=1)) +
+  labs(x = "Main Project Category", y = "Project Totals") +
+  ggtitle("Kickstarter Project Main Category Across Years")
+
+ks %>%
+  filter(launch_year <= 2018) %>%
+  ggplot(aes(x = launch_year), y = count(main_category)) + 
+  geom_bar() + facet_wrap(~main_category) +  
+  theme(axis.text.x = element_text(angle= 90, hjust=1)) +
+  labs(x = "Year", y = "Project Totals") +
+  ggtitle("Kickstarter Project Main Category Distributions over Time") +
+  scale_x_continuous(breaks = c(2009,2010,2011,2012,2013,2014,2015,2016,2017))
+
+
+```
+
+
+
+## Successful Project Categories
+
+Now let's see the percentage of successful projects (using main category). I'll have to mutate a new column to get the quantity I want. Here's more on mutate: https://dplyr.tidyverse.org/reference/mutate.html.
+
+
+```{r pct success}
+
+ks %>%
+  
+  group_by(main_category) %>%
+  summarize(pct_success = (sum(state == "successful")/length(main_category)) * 100) %>%
+  arrange(desc(pct_success)) %>%
+  ggplot(aes(x = reorder(main_category, - pct_success), y = pct_success)) + 
+  geom_bar(stat = "identity") + 
+  theme(axis.text.x = element_text(angle= 90, hjust=1)) +
+  geom_text(aes(label=sprintf("%0.2f", round(pct_success, digits = 2))), vjust = -.35) +
+  labs(x = "Main Category", y = "Percent Success") +
+  ggtitle("Project Success Rate Across Categories")
+
+pct_film_dance = (sum(ks$main_category == "Dance")/length(ks$ID)) * 100
+pct_film_dance
+pct_film_theater = (sum(ks$main_category == "Theater")/length(ks$ID)) * 100
+pct_film_theater
+```
+
+The most successful Kickstarter projects are Dance and Theater, yet those categories only make up about 1% and 3% of all projects.
+
+## What categories are the top-10 funded projects?
+
+Let's see where the money is going by looking at the highest-funded projects total.
+
+```{r highest funded}
+
+ksp <- ks %>%
+  select(usd_pledged, name, category, main_category, state) %>%
+  arrange(desc(usd_pledged)) %>%
+  slice(1:10) 
+
+ksp %>%
+  group_by(category) %>%
+  summarize(tot_pledged = sum(usd_pledged))%>%
+  ggplot(aes(x = reorder(category, -tot_pledged), y = tot_pledged)) + 
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = tot_pledged), vjust = -.5) + 
+  labs(x = "Category", y = "Total Pledged (USD)") +
+  scale_y_continuous(labels = scales::dollar)  +
+  ggtitle("Top 10 Highest-Funded Projects by Category")
+
+pdesign_pct =(sum(ks$category == "Product Design")/length(ks$ID)) * 100
+pdesign_pct
+
+```
+
+Interesting. It appears that althought the Product Design category only makes up 6% of Kickstarter categories, Let's see if this trend holds. We are going to plot the top 10 highest-grossing categories and main categories.
+
+## Which categories get the most funding overall?
+
+```{r money for categories }
+
+ks_money_sub <- ks %>%
+  group_by(category) %>%
+  summarize(total_pledged = sum(pledged)) %>%
+  arrange(desc(total_pledged)) %>%
+  slice(1:10) %>%
+  ggplot(aes(x = reorder(category, -total_pledged), y = total_pledged)) +
+  geom_bar(stat = "identity") + 
+  theme(axis.text.x = element_text(angle= 90, hjust=1)) +
+  labs(x = "Category", y = "Total Pledged (USD)") + 
+  scale_y_continuous(labels = scales::dollar) +
+  ggtitle("Highest-Funded Project Subcategories")
+  
+
+ks_money_main <- ks %>%
+  group_by(main_category) %>%
+  summarize(total_pledged = sum(pledged)) %>%
+  arrange(desc(total_pledged)) %>%
+  slice(1:10) %>%
+  ggplot(aes(x = reorder(main_category, -total_pledged), y = total_pledged)) +
+  geom_bar(stat = "identity") + 
+  theme(axis.text.x = element_text(angle= 90, hjust=1)) +
+  labs(x = "Main Category", y = "Total Pledged (USD)") + 
+  scale_y_continuous(labels = scales::dollar) +
+  ggtitle("Highest-Funded Project Categories") 
+  
+
+ks_money_main
+ks_money_sub
+
+```
+
+Design (and namely its subcategory Product Design) receive the most funding.
+
+
+## Analyzing Funding Percentiles
+
+What happens to your project if you are over or under your funding goal? Here I will create a percent difference column between funding goal and funding amount. Then I'll use the cut function to create 10 breaks in the percentages, effectively creating percentiles. Here is some more info on R's cut function: https://www.rdocumentation.org/packages/base/versions/3.5.0/topics/cut. 
+
+In order to calculate success rates, I'll consider a success the total number of "successful" states out of all states, and I'll factor out the "live" and "undefined" states as they are ambiguous. For failure rate, I consider a project failed if it is "failed", "canceled", or "suspended". I then add these failure rates per percentile range to a new dataframe.
+
+```{r pct needed for success}
+
+ks_pct <- ks
+
+ks_pct <- ks_pct %>%
+  
+  mutate(difference = usd_pledged - usd_goal) %>%
+  mutate(pct_diff = (difference/(usd_goal+usd_pledged))*100) %>%
+  filter(pct_diff >0 ) %>%
+  mutate(intervals = cut(pct_diff, breaks =  10))
+
+pos<-ks_pct %>%
+  group_by(intervals) %>%
+  summarize(fail_per_interval = ((sum(state == "failed") + sum(state == "canceled") + sum(state == "suspended"))/(length(state)-sum(state == "live") - sum(state=="undefined")) *100))
+
+neg<-ks_pct %>%
+  group_by(intervals) %>%
+  summarize(success_per_interval = (sum(state=="successful")/(length(state)-sum(state == "live")-sum(state == "undefined"))*100))
+
+
+intervals_pos_df <- left_join(pos,neg,by="intervals")
+
+intervals_pos_df
+```
+
+Fascinating! It appears that any project that meets its funding has a very high (97%) success rate. It is still interesting why nearly 3% fail even after reaching 90-100% of their goal
+
+Now let's do the same thing, but see if there are projects that don't meet their goal and end up succeeding. 
+
+```{r pct of success for not reach goal}
+
+ks_pct_neg <- ks
+
+ks_pct_neg <- ks_pct_neg %>%
+  
+  mutate(difference = usd_pledged - usd_goal) %>%
+  mutate(pct_diff = (difference/(usd_goal+usd_pledged))*100) %>%
+  filter(pct_diff <= 0) %>%
+  mutate(intervals = cut(pct_diff, breaks =  10))
+
+pos<-ks_pct_neg %>%
+  group_by(intervals) %>%
+  summarize(fail_per_interval = ((sum(state == "failed") + sum(state == "canceled") + sum(state == "suspended"))/(length(state)-sum(state == "live") - sum(state=="undefined")) *100))
+
+neg<-ks_pct_neg %>%
+  group_by(intervals) %>%
+  summarize(success_per_interval = (sum(state=="successful")/(length(state)-sum(state == "live")-sum(state == "undefined"))*100))
+
+intervals_neg_df <- left_join(pos,neg,by="intervals")
+
+
+intervals_neg_df
+
+  
+
+```
+
+
+From here, one thing is clear, if you are short on funding from over 10 to 100% of your Kickstarter goal, there is no chance of success! However, if you are within 10% of reaching your goal, things still look up, as you have over an 80% chance of success.
+
+## Standardizing Success Rates
+
+Now let's see how successes compare across categories relative to one another. I will do this by standardizing success rates by category. This way, we can see if there really are projects that perform better than others on average. Heres a bit more on standardization in R: http://stats.seandolinar.com/calculating-z-scores-with-r/.
+
+
+```{r standardization}
+
+std <- ks
+
+stdize <- std %>%
+  group_by(main_category, launch_year) %>%
+  summarize(cat_success = mean((sum(state == "successful")/length(main_category)))) 
+
+stdize <- stdize%>%
+  mutate(avg_success = (sum(std$state == "successful")/length(std$state))) %>%
+  mutate(stdized_success = (cat_success-avg_success)/sd(cat_success))
+
+stdize
+
+stdize %>%
+  ggplot(aes(x = launch_year, y = stdized_success)) + 
+  ggtitle("Standardized Success Vs Category Faceted on Years") +
+  geom_point() + 
+  facet_wrap(~main_category) +  
+  theme(axis.text.x = element_text(angle= 60, hjust=1)) +
+  labs(x="Main Category", 
+       y = "Standardized Success") 
+
+stdize %>%
+  filter(launch_year < 2018) %>%
+  ggplot(aes(x = main_category, y = stdized_success)) + 
+  ggtitle("Standardized Success Vs Category Faceted on Years") +
+  geom_point() + 
+  facet_wrap(~launch_year) +  
+  theme(axis.text.x = element_text(angle= 60, hjust=1)) +
+  labs(x="Main Category", 
+       y = "Standardized Success") 
+
+stdize %>%
+  filter(launch_year < 2018) %>%
+  group_by(main_category) %>%
+  summarize(avg_succ = mean(stdized_success)) %>%
+  ggplot(aes(x = main_category, y = avg_succ)) + 
+  ggtitle("Standardized Success Rate Across Project Types") +
+  geom_point() + 
+  theme(axis.text.x = element_text(angle= 60, hjust=1)) +
+  labs(x="Main Category", 
+       y = "Standardized Success")
+
+
+```
+
+Even when standardizing success rate, we see that art-related projects have higher success rates on average, especially dance.
+
+
+## How do projects succeed over time?
+
+It may also be interesting to see how people give money over time. Namely, does having a longer project imply success? Let's use a linear model to find out. First, we have to get some time differences between the project launch and deadline. Let's get an average success rate based on the number of days a project is live. We'll do this by subtracting the launch date from the deadline column.
+
+```{r length vs success}
+len_vs_succ <- ks
+
+len_vs_succ <- len_vs_succ%>%
+  mutate(proj_len = as.numeric(deadline-launched)) %>%
+  group_by(proj_len) %>%
+  summarize(succ_pct = (sum(state=="successful")/(length(state)-sum(state == "live")-sum(state == "undefined"))))
+
+len_vs_succ <- len_vs_succ %>%
+  filter(proj_len <= 70)
+
+len_vs_succ
+```
+
+
+## Hypothesis Testing
+
+Now that we've prepared our data by getting time (in days), and success rate, we should test whether length of time affects success rate of projects. Let's do this via a hypothesis test. Our null hypothesis will be that there is no relationship between the amount of days a project is open and success rate of projects. If you're new to Hypothesis Testing or would like some more information, check http://www.r-tutor.com/elementary-statistics/hypothesis-testing out.
+
+```{r hyp test}
+
+len_vs_succ %>%
+  lm(proj_len~succ_pct, data=.) %>%
+  broom::tidy()
+
+
+```
+
+
+To interpret these results, we first look at the p-value for succ_pct. The p-value is 0.0000652, which is much less than the alpha we are using (by default) in our test, so we reject the null hypotheses that there is no relationship between the days a project is live and success rate. In fact, since the estimate of succ_pct is large and negative, this implies that there is a strong negative relationship between the two. Let's see if a visualization can help us see the relationship more clearly by plotting project length (in days) versus average success rate as a percentage.
+
+```{r success vs length plot}
+len_vs_succ_plt  <- len_vs_succ 
+
+len_vs_succ_plt %>%
+  ggplot(aes(x = proj_len, y = succ_pct)) + 
+  labs(x = "Project Length (Days)", y = "Success Rate") + 
+  geom_point(aes(color = succ_pct > 0.52)) + 
+  geom_smooth(method = lm) + 
+  scale_x_continuous(breaks = c(0,5,10,15,20,25,30,35,40,45,50,55,60,65,70)) +
+  theme(legend.position = "none") +
+  geom_vline(xintercept=8, color="black") +
+  geom_vline(xintercept=26, color="black")
+
+len_vs_succ
+```
+
+The above plot verifies our regression model output. There definitely is a strong negative relationship between length of days a project is live and its success rate. I have highlighted highly sucessful days and denoted their range with vertical lines for clarity.
+
+# Concluding
+
+We have learned a lot about Kickstarter projects through data analysis, visualization, regression, and hypothesis testing. OVerall, it was art-related projects that had the highest success rate across all categories of projects. However, it was Design, Games, and Technology that recieved the most money, and the subcategories Product Design, Tabletop Games, and Video Games were the highest grossing subcategories. In addition, we found out that even if you are within a 10% deficit of your funding goal, your project still has a high chance of success (around 80%), but anything beyond is very likely to fail. Conversely, we saw that all projects that met any percentile of their funding goal succeeded. Another interesting find was that it does not pay to leave your project live on Kickstarter for longer than about 25 days. From then on its a pretty sharp decline in terms of success rate. Ideally your project should be live from about 8 to 26 days.
+
+
+
+
+
+
+
+
+
+
+
+
